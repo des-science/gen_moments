@@ -1,0 +1,8 @@
+import numpy as np
+
+nzbin2 = np.genfromtxt("./nzbins/FLASK_2.txt")
+nzbin3 = np.genfromtxt("./nzbins/FLASK_3.txt")
+zbin = nzbin2[:,0]
+nz2 = nzbin2[:,1]
+nz3 = nzbin3[:,1]
+dz = zbin[1]-zbin[0]
