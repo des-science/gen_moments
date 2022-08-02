@@ -1,55 +1,54 @@
-import os
+import sys, os
 import numpy as np
 import scipy
-from scipy import integrate
+from scipy import interpolate
 import matplotlib.pyplot as plt
-import camb
-from camb import model
-from jupyterthemes import jtplot
-import math
-import time
-import h5py
-import sys
-from tqdm import tqdm
+import ast
 import astropy.constants as const
 import astropy.units as units
 from cosmosis.datablock import names, option_section as opt
 from cosmosis.datablock.cosmosis_py import errors
+sys.path.insert(0, os.environ['COSMOSIS_SRC_DIR'] + '/gen_moments/cosmosis/src/')
+sys.path.insert(0, os.environ['COSMOSIS_SRC_DIR'] + '/gen_moments/data/')
+import get_unique_comb_kp2_kp3 as get_unique_ind
 import numpy as np
-from scipy.interpolate import InterpolatedUnivariateSpline
-import warnings
 # Finally we can now import camb
 import camb
-cosmo = names.cosmological_parameters
-import h5py as h5
+cosmo_sec = names.cosmological_parameters
+IA_sec = names.intrinsic_alignment_parameters
 import healpy as hp
-import pickle
-import copy
 import pickle as pk
+
 def save_obj(name, obj):
     with open(name + '.pkl', 'wb') as f:
-        pickle.dump(obj, f, protocol = 2)
+        pk.dump(obj, f, protocol = 2)
 
 def load_obj(name):
     with open(name + '.pkl', 'rb') as f:
-        return pickle.load(f)#, encoding='latin1')
-
-jtplot.reset()
-
+        return pk.load(f)#, encoding='latin1')
 
 class theory_setup():
 
     def __init__(self, options):
+        nz = options.get_int(option_section, "nz", default=200)
+        zmin = options.get_double(option_section, "zmin", default=0.0)
+        zmax = options.get_double(option_section, "zmax", default=4.0)
+        self.sm_all = ast.literal_eval(options.get_string(option_section, "sm_all", default='[21.0,33.6,54.,86., 137.6, 220.16]'))
+        self.fname_mask_stuff = options.get_string(option_section, "fname_mask_stuff", default='namaster_stuff.pk')
+        self.scheme = options.get_string(option_section, "scheme", default='SC')
+        self.do_save_DV = options.get_bool(option_section, "do_save_DV", default=False)
+        self.isLHS_sample = options.get_bool(option_section, "isLHS_sample", default=False)        
+        self.saveDV_dir = options.get_string(option_section, "saveDV_dir", default='DV_all')
+        self.saveDV_prefix = options.get_string(option_section, "saveDV_prefix", default=None)
         self.z_array = np.linspace(zmin, zmax, nz)
-
-
+        
     def get_Pk_camb(self, block):
-        Om, h, Ob, ns, lg10As = block[cosmo, "omega_m"], block[cosmo, "h0"], block[cosmo, "omega_b"], block[cosmo, "n_s"], (block[cosmo, "lg10A_s"])
-        mnu = block[cosmo, "mnu"]
+        Om, h, Ob, ns, lg10As = block[cosmo_sec, "omega_m"], block[cosmo_sec, "h0"], block[cosmo_sec, "omega_b"], block[cosmo_sec, "n_s"], (block[cosmo_sec, "lg10A_s"])
+        mnu = block[cosmo_sec, "mnu"]
         As = 10**lg10As
         Onu = mnu/((h**2)*93.14)
-        nnu = block[cosmo, "nnu"]
-        tau = block[cosmo, "tau"]
+        nnu = block[cosmo_sec, "nnu"]
+        tau = block[cosmo_sec, "tau"]
         bestfit = {}
         bestfit["ombh2"] = Ob*h**2
         bestfit["omch2"] = (Om-Ob-Onu)*h**2
@@ -65,7 +64,7 @@ class theory_setup():
         pars_LCDM.WantTransfer = True
         results_LCDM = camb.get_results(pars_LCDM)
         self.sig8 = results_LCDM.get_sigma8_0()
-        block[cosmo, 'sigma8'] = self.sig8
+        block[cosmo_sec, 'sigma_8'] = self.sig8
         self.PK = camb.get_matter_power_interpolator(pars_LCDM, hubble_units=False, k_hunit=False, kmax=50.0, zmax=4,nonlinear=True, extrap_kmax= 10**10)
         self.PK_L = camb.get_matter_power_interpolator(pars_LCDM, hubble_units=False, k_hunit=False, kmax=50.0, zmax=4,nonlinear=False, extrap_kmax= 10**10)
         self.chitoz = results_LCDM.redshift_at_comoving_radial_distance
@@ -90,39 +89,67 @@ class theory_setup():
             self.ns_mat[jz, :] = ns
         return 0
 
-    def get_qi_nz(self, block):
-        self.qi_gravonly = {}
+    def get_qigrav_and_nz(self, block):
         zarray_inp = block['nz_source', 'z']
+        self.nz_source_all = {}
+        self.nbins_tot = 0
+        for ji in range(1000):
+            if ('nz_source', 'bin_' + str(ji+1)) in block.keys():
+                nz_ji = block['nz_source', 'bin_' + str(ji+1)]
+                nz_norm_ji = nz_ji/scipy.integrate.simps(nz_ji, zarray_inp)
+                nz_norm_ji_interp = interpolate.inter1d(zarray_inp, nz_norm_ji, fill_value=0.0)
+                nz_new_ji = nz_norm_ji_interp(self.z_array)
+                nz_new_ji /= scipy.integrate.simps(nz_new_ji, self.z_array)
+                self.nz_source_all[ji] = nz_new_ji
+                nbins_tot += 1
+            else:
+                break
+            
+
+        Om0, H0 = block[cosmo_sec, "omega_m"], 100.*block[cosmo_sec, "h0"]
+        self.qi_gravonly = {}
+        for ji in range(self.nbins_tot):
+            ng_array_source = self.nz_source_all[ji]
+            chi_lmat = np.tile(self.chi_zbin.reshape(len(self.z_array), 1), (1, len(self.z_array)))
+            chi_smat = np.tile(self.chi_zbin.reshape(1, len(self.z_array)), (len(self.z_array), 1))
+            num = chi_smat - chi_lmat
+            ind_lzero = np.where(num <= 0)
+            num[ind_lzero] = 0
+            ng_array_source_rep = np.tile(ng_array_source.reshape(1, len(self.z_array)), (len(self.z_array), 1))
+            int_sourcez = scipy.integrate.simps(ng_array_source_rep * (num / chi_smat), self.z_array)
+            coeff_ints = 3 * (H0 ** 2) * Om0 / (2. * ((const.c.to(units.km / units.s)).value)**2)
+            qi_array = coeff_ints * self.chi_array * (1. + self.z_array) * int_sourcez
+            qi_array[0] = 0.
+            self.qi_gravonly[ji] = qi_array
+
+        return 0
+
+    def get_qi_after_IA(self, block):
+        z0 = block[IA_sec,'zpiv']        
+        AIA0 = block[IA_sec,'A1']
+        alpha_IA = block[IA_sec,'alpha1']
+        IAz = AIA0*(((1+self.z_array)/(1+z0))**alpha_IA)*(0.0134/self.Dz_nz)
+        self.qi_wIA = {}
+        for jz in range(self.nbins_tot):
+            qi_jz = self.qi_gravonly[jz]
+            ni_jz = self.nz_source_all[jz]
+            qIAz = IAz * ni_jz * (1/self.dchi_dz)
+            self.qi_wIA[jz] = qi_jz - qIAz
+        return 0
 
 
-        if ('nz_source', 'bin_' + str(binvs)) in block.keys():
-            other_params_dict_bin['ng_value_source'] = block['nz_source', 'bin_' + str(binvs)]
-
-        Om0, H0 = block[cosmo, "omega_m"], 100.*block[cosmo, "h0"]
-        qi = np.zeros(len(self.z_array))
-        for i in range(len(self.z_array)):
-            foo = nz_source_bin[i:]*(1-self.chi_zbin[i]/self.chi_zbin[i:])
-            qi[i] = np.trapz(foo, self.z_array[i:])
-        qi *= (1.5*Om0*(H0/((const.c.to(units.km / units.s)).value))**2)*(1+self.z_array) * self.chi_zbin
-        qi[0] = 0
-        return qi
-
-    def get_mask_stuff(self, fname='namaster_stuff.pk'):
-        df = pk.load(open(fname,'rb'))
-        M = df['M']
-        self.ME = df['ME']
-        self.mask = df['mask']
+    def get_mask_stuff(self):
+        df = pk.load(open(self.fname_mask_stuff,'rb'))
+        # M = df['M']
+        # self.ME = df['ME']
+        # self.mask = df['mask']        
+        self.mask = df['ME']
         self.lmax = df['lmax']
         return 0
 
     def compute_Plz_mat(self):
-        '''
-        It computes the smoothed (by a top-hat filter) 2nd moments of the density field given the
-        3D power spectrum at fixed z. (k=l/chi(z)).
-        '''
         nz = len(self.z_array)
-        nell = self.lmax
-        # chi_zbin = self.ztochi(self.z_array)
+        nell = self.lmax        
         ell = np.arange(self.lmax)
         z_mat = np.tile(self.z_array.reshape(nz, 1), (1, nell))
         chi_mat = np.tile(self.chi_zbin.reshape(nz, 1), (1, nell))
@@ -148,26 +175,18 @@ class theory_setup():
         return 0
 
 
-    # def get_Dz_knletc(self):
-    #     return 0
-
-
     def compute_factosum(self, smoothing_scales1, smoothing_scales2):
-        '''
-        It computes the smoothed (by a top-hat filter) 2nd moments of the density field given the
-        3D power spectrum at fixed z. (k=l/chi(z)).
-        '''
         nz = len(self.z_array)
         nell = self.lmax
         ell = np.arange(self.lmax)   
 
-        self.fac_to_sum = np.zeros((nz, nell, len(smoothing_scales1)))
+        fac_to_sum = np.zeros((nz, nell, len(smoothing_scales1)))
         for i, sm in enumerate(zip(smoothing_scales1,smoothing_scales2)):
             # convert scale to radians ***
             sm_rad1 =(sm[0]/60.)*np.pi/180.
             sm_rad2 =(sm[1]/60.)*np.pi/180.
 
-            # smoothing kernel (top-hat)
+            
             A1 = 1./(2*np.pi*(1-np.cos(sm_rad1)))
             A2 = 1./(2*np.pi*(1-np.cos(sm_rad2)))
             B = np.sqrt(np.pi/(2.*ell+1.0))
@@ -177,27 +196,23 @@ class theory_setup():
             fact2[0] = 1.0
             fact1_mat = np.tile(fact1.reshape(1, nell), (nz, 1))
             fact2_mat = np.tile(fact2.reshape(1, nell), (nz, 1))
-            self.fac_to_sum[:, :, i] = fact1_mat * fact2_mat
-        return 0
+            fac_to_sum[:, :, i] = fact1_mat * fact2_mat
+        return fac_to_sum
 
     def compute_fact_dfact_kappa3(self, sm1):
-        '''
-        It computes the smoothed (by a top-hat filter) 2nd moments of the density field given the
-        3D power spectrum at fixed z. (k=l/chi(z)).
-        '''
         nz = len(self.z_array)
         nell = self.lmax
         ell = np.arange(self.lmax)   
-        self.fact_dfact_kappa3_to_sum = np.zeros((nz, nell, 2))
+        fact_dfact_kappa3_to_sum = np.zeros((nz, nell, 2))
         sm_rad1 =(sm1/60.)*np.pi/180.
         fact1 = (scipy.special.eval_legendre(ell-1,np.cos(sm_rad1))-scipy.special.eval_legendre(ell+1,np.cos(sm_rad1)))/(4*np.pi*(1-np.cos(sm_rad1)))
         fact1[0] = 1./4*np.pi
-        self.fact_dfact_kappa3_to_sum[:,:,0] = np.tile(fact1.reshape(1, nell), (nz, 1))
+        fact_dfact_kappa3_to_sum[:,:,0] = np.tile(fact1.reshape(1, nell), (nz, 1))
         d_fact1 =  scipy.special.eval_legendre(ell,np.cos(sm_rad1))*np.sin(sm_rad1)/(1-np.cos(sm_rad1))
         d_fact1 -= fact1*(4*np.pi/(2*ell+1))*np.sin(sm_rad1)/(1-np.cos(sm_rad1))
         d_fact1[0] = 0  #0th Wl = 1
-        self.fact_dfact_kappa3_to_sum[:,:,1] = np.tile(d_fact1.reshape(1, nell), (nz, 1))
-        return 0   
+        fact_dfact_kappa3_to_sum[:,:,1] = np.tile(d_fact1.reshape(1, nell), (nz, 1))
+        return fact_dfact_kappa3_to_sum   
 
     def compute_abc_kappa3(self):
         nz = len(self.z_array)
@@ -206,13 +221,11 @@ class theory_setup():
         knl_mat = np.tile(self.knl_nz.reshape(nz, 1), (1, nell))
         Dz_mat = np.tile(self.Dz_nz.reshape(nz, 1), (1, nell))    
 
-        # chi_zbin = ztochi(self.z_array)
         ell = np.arange(self.lmax)
         chi_mat = np.tile(self.chi_zbin.reshape(nz, 1), (1, nell))
         ell_mat = np.tile(ell.reshape(1, nell), (nz, 1))
         k_mat = ell_mat/chi_mat    
         q_mat = k_mat/knl_mat
-            # Initialise coefficients small-scales fitting formulae.
         if self.scheme == 'SC':
             coeff = [0.25,3.5,2.,1.,2.,-0.2,1.,0.,0.]
         elif self.scheme == 'GM':
@@ -236,11 +249,6 @@ class theory_setup():
 
 
     def compute_masked_m123_vec(self, smoothing_scales_all3):
-        '''
-        It computes the smoothed (by a top-hat filter) 2nd moments of the density field given the
-        3D power spectrum at fixed z. (k=l/chi(z)).
-        '''
-        # a, b, c = abc_all3
         a, b, c = self.a, self.b, self.c
         smoothing_scales1, smoothing_scales2, smoothing_scales3 = smoothing_scales_all3
         nz = len(self.z_array)
@@ -280,14 +288,14 @@ class theory_setup():
             d_fact2 = self.fact_dfact_kappa3_to_sum_all[sm[1]][:,:,1]
             d_fact3 = self.fact_dfact_kappa3_to_sum_all[sm[2]][:,:,1]        
 
-            d_moments12_d_ln1b[:,i] = (sm_rad1*np.sum(b*fact2*d_fact1*Plz_mat, axis=1))
-            d_moments12_d_ln2b[:,i] = (sm_rad2*np.sum(b*fact1*d_fact2*Plz_mat, axis=1))
+            d_moments12_d_ln1b[:,i] = (sm_rad1*np.sum(b*fact2*d_fact1*self.P_lz_mat, axis=1))
+            d_moments12_d_ln2b[:,i] = (sm_rad2*np.sum(b*fact1*d_fact2*self.P_lz_mat, axis=1))
 
-            d_moments13_d_ln1b[:,i] = (sm_rad1*np.sum(b*fact3*d_fact1*Plz_mat, axis=1))
-            d_moments13_d_ln3b[:,i] = (sm_rad3*np.sum(b*fact1*d_fact3*Plz_mat, axis=1))
+            d_moments13_d_ln1b[:,i] = (sm_rad1*np.sum(b*fact3*d_fact1*self.P_lz_mat, axis=1))
+            d_moments13_d_ln3b[:,i] = (sm_rad3*np.sum(b*fact1*d_fact3*self.P_lz_mat, axis=1))
 
-            d_moments23_d_ln2b[:,i] = (sm_rad2*np.sum(b*fact3*d_fact2*Plz_mat, axis=1))
-            d_moments23_d_ln3b[:,i] = (sm_rad3*np.sum(b*fact2*d_fact3*Plz_mat, axis=1))
+            d_moments23_d_ln2b[:,i] = (sm_rad2*np.sum(b*fact3*d_fact2*self.P_lz_mat, axis=1))
+            d_moments23_d_ln3b[:,i] = (sm_rad3*np.sum(b*fact2*d_fact3*self.P_lz_mat, axis=1))
         mu = 5/7
 
         moments  = 2*mu*moments13a*moments23a + (1-mu)*moments13c*moments23c
@@ -318,173 +326,66 @@ class theory_setup():
         return res
 
 
+    def execute(self, block):
 
-def get_qi3_qi2_forIA(params, qi_all, ni_all, self.z_array, Dz, dchi_dz):
-    AIA0, z0, alpha_IA = params['A_IA'], params['z0_IA'], params['alpha_IA']
-    IAz = AIA0*(((1+self.z_array)/(1+z0))**alpha_IA)*(0.0134/Dz)
-    qi_new = {}
-    for jz in range(ns_tot):
-        qi_jz = qi_all[jz]
-        ni_jz = ni_all[jz]
-        qIAz = IAz * ni_jz * (1/dchi_dz)
-        qi_new = qi_jz - qIAz
-    return qi_new
+        self.get_Pk_camb(block)
+        self.get_qigrav_and_nz(block)
+        self.get_qi_after_IA(block)
+        self.get_mask_stuff()
+        self.compute_Plz_mat()
 
-# def get_qi3_qi2_forIA():
+        self.nsm = len(self.sm_all)
 
-def saveDV(jr, nlhs=1000):
-    df_cosmoparams = np.loadtxt('cosmo_samp_rs' + str(jr) + '_5cosmo_nsamp_' + str(nlhs) + '.txt')
-    for jlhs in tqdm(range(df_cosmoparams.shape[0])):
-        params = df_cosmoparams[jlhs, :]
-        t0_init = time.time()
-        # Ob, Om, As, h, ns = cosmo_params['Ob'], cosmo_params['Om'], cosmo_params['As'], cosmo_params['h'], cosmo_params['ns'] 
-        PK, PK_L, chitoz, ztochi = get_Pk_camb(params)
-        ME, mask, lmax, nside = get_mask_stuff(fname='namaster_stuff.pk')
-
-        #get relevant redshift distribution
-        nzbin2 = np.genfromtxt("./nzbins/FLASK_2.txt")
-        nzbin3 = np.genfromtxt("./nzbins/FLASK_3.txt")
-        self.z_array = nzbin2[:,0]
-        nz2 = nzbin2[:,1]
-        nz3 = nzbin3[:,1]
-        dz = self.z_array[1]-self.z_array[0]
-        sm = np.array([21.0,33.6,54.,86., 137.6, 220.16])
-        scheme='SC'
-
-        qi_all = {}
-        for jz in range(nz):
-            qi_all[jz] = get_qi(self.z_array, nz_source_bin_jz, chibin, cosmo_params)
-
-        # chibin = results_LCDM.comoving_radial_distance(self.z_array)
-        # qi_b2 = np.zeros(len(self.z_array))
-        # for i in range(len(self.z_array)):
-        #     foo = nz2[i:]*(1-chibin[i]/chibin[i:])
-        #     qi_b2[i] = np.trapz(foo, self.z_array[i:])
-        # qi_b2 = (1.5*pars_LCDM.omegam*(pars_LCDM.H0/(camb.constants.c/1000.))**2)*(1+self.z_array)*qi_b2*chibin
-        # qi_b2[0] = 0
+        self.fac_to_sum_all = {}
+        for i in range(len(self.nsm)):
+            for j in range(len(self.nsm)):
+                self.fac_to_sum_all[(self.sm_all[i], self.sm_all[j])] = self.compute_factosum(np.array([self.sm_all[i]]), np.array([self.sm_all[j]]))
 
 
-        # qi_b3 = np.zeros(len(self.z_array))
-        # for i in range(len(self.z_array)):
-        #     foo = nz3[i:]*(1-chibin[i]/chibin[i:])
-        #     qi_b3[i] = np.trapz(foo, self.z_array[i:])
-        # qi_b3 = (1.5*pars_LCDM.omegam*(pars_LCDM.H0/(camb.constants.c/1000.))**2)*(1+self.z_array)*qi_b3*chibin
-        # qi_b3[0] = 0
+        self.fact_dfact_kappa3_to_sum_all = {}
+        for i in range(len(self.nsm)):
+            self.fact_dfact_kappa3_to_sum_all[(self.sm_all[i])] = self.compute_fact_dfact_kappa3(self.sm_all[i])  
+
+        id_corr2_unique, id_kp2_unique, id_corr3_unique, id_kp3_unique = get_unique_ind(self.nsm, self.nbins_tot)
+
+        self.corr2_all = {}
+        for jid_c2 in range(len(id_corr2_unique)):
+            i, j = id_corr2_unique[jid_c2]
+            self.corr2_all[(self.sm_all[i], self.sm_all[j])] = self.compute_masked_m12_from_factosum(self.fac_to_sum_all[(self.sm_all[i], self.sm_all[j])])  
 
 
-        Plz_mat = compute_Plz_mat(PK, self.z_array, lmax = lmax, mask = ME)
-
-        Dz_nz, knl_nz, ns_mat = get_Dz_knletc(PK_L, self.z_array, lmax=lmax)
-
-        a_k3, b_k3, c_k3 = compute_abc_kappa3(self.z_array, Dz_nz, knl_nz, ns_mat, scheme=scheme)
-
-        fac_to_sum_all = {}
-        for i in range(len(sm)):
-            for j in range(len(sm)):
-                fac_to_sum_all[(sm[i], sm[j])] = compute_factosum(self.z_array, np.array([sm[i]]), np.array([sm[j]]), lmax = lmax)
-
-
-        fact_dfact_kappa3_to_sum_all = {}
-        for i in range(len(sm)):
-            fact_dfact_kappa3_to_sum_all[(sm[i])] = compute_fact_dfact_kappa3(self.z_array, sm[i], lmax = lmax)  
-
-        corr2_all = {}
-        for i in range(len(sm)):
-            for j in range(len(sm)):
-                if i <= j:
-                    corr2_all[(sm[i], sm[j])] = compute_masked_m12_from_factosum(self.z_array, Plz_mat, fac_to_sum_all[(sm[i], sm[j])])  
-                else:
-                    corr2_all[(sm[i], sm[j])] = corr2_all[(sm[j], sm[i])]
-
-
-        kp2_2_2 = np.zeros((len(sm),len(sm)))
-        kp2_2_3 = np.zeros((len(sm),len(sm)))
-        kp2_3_3 = np.zeros((len(sm),len(sm)))
-
-        for k in range(3):
-            if k == 0:
-                for i in range(len(sm)):
-                    for j in range(len(sm)):
-                        if i <= j:
-                            kp2_2_2[i,j] = kappa2_vec(corr2_all, self.z_array, chibin, qi_b2, qi_b2, sm[i], sm[j], mask = ME)
-                        else:
-                            kp2_2_2[i,j] = kp2_2_2[j,i]
-
-            elif k == 1:
-                for i in range(len(sm)):
-                    for j in range(len(sm)):
-                        if i <= j:
-                            kp2_2_3[i,j] = kappa2_vec(corr2_all, self.z_array, chibin, qi_b2, qi_b3, sm[i], sm[j], mask = ME)
-                        else:
-                            kp2_2_3[i,j] = kp2_2_3[j,i]
-            elif k == 2:
-                for i in range(len(sm)):
-                    for j in range(len(sm)):
-                        if i <= j:
-                            kp2_3_3[i,j] = kappa2_vec(corr2_all, self.z_array, chibin, qi_b3, qi_b3, sm[i], sm[j], mask = ME)
-                        else:
-                            kp2_3_3[i,j] = kp2_3_3[j,i]
-        # save_obj('./fisher_new/kp2param0_2_2', kp2_2_2)
-        # save_obj('./fisher_new/kp2param0_2_3', kp2_2_3)
-        # save_obj('./fisher_new/kp2param0_3_3', kp2_3_3)
+        self.kp2_all = {}
+        for jid_kp2 in range(len(id_kp2_unique)):
+            jz1, jz2, i, j = id_kp2_unique[jid_kp2]
+            mjz1 = 1.+block['shear_calibration_parameters','m' + str(jz1+1)]
+            mjz2 = 1.+block['shear_calibration_parameters','m' + str(jz2+1)]
+            self.kp2_all[jz1, jz2, i, j] = (mjz1*mjz2)*self.kappa2_vec(self.corr2_all, self.qi_wIA[jz1]*self.qi_wIA[jz2], self.sm_all[i], self.sm_all[j])
         
-        kp2_all_theory = {'2_2':kp2_2_2, '2_3':kp2_2_3, '3_3':kp2_3_3}
 
+        self.corr3_all = {}
+        for jid_c3 in range(len(id_corr3_unique)):        
+            i, j, k = id_corr2_unique[jid_c3]
+            self.corr3_all[(self.sm_all[i], self.sm_all[j], self.sm_all[k])] = self.compute_masked_m123_vec((self.sm_all[i], self.sm_all[j], self.sm_all[k]))    
 
-        corr3_all = {}
-        for i in range(len(sm)):
-            for j in range(len(sm)):
-                for k in range(len(sm)):
-                    if (k >= j and j >= i):
-                        corr3_all[(sm[i], sm[j], sm[k])] = compute_masked_m123_vec(Plz_mat, self.z_array, a_k3, b_k3, c_k3, sm[i], sm[j], sm[k], lmax = lmax, scheme=scheme, mask=mask)    
-                    else:
-                        foo = np.sort([i, j, k])
-                        corr3_all[(sm[i], sm[j], sm[k])] = corr3_all[(sm[foo[0]], sm[foo[1]], sm[foo[2]])]
+        self.kp3_all = {}
+        for jid_kp3 in range(len(id_kp3_unique)):
+            jz1, jz2, jz3, i, j, k = id_kp3_unique[jid_kp3]
+            mjz1 = 1.+block['shear_calibration_parameters','m' + str(jz1+1)]
+            mjz2 = 1.+block['shear_calibration_parameters','m' + str(jz2+1)]
+            mjz3 = 1.+block['shear_calibration_parameters','m' + str(jz3+1)]
+            self.kp3_all[jz1, jz2, jz3, i, j, k] = (mjz1*mjz2*mjz3)*self.kappa3_vec(self.corr3_all, self.qi_wIA[jz1]*self.qi_wIA[jz2]*self.qi_wIA[jz3], self.sm_all[i], self.sm_all[j], self.sm_all[k])
 
-
-
-        kp3_2_2_2 = np.zeros((len(sm),len(sm),len(sm)))
-        kp3_3_2_2 = np.zeros((len(sm),len(sm),len(sm)))
-        kp3_2_3_3 = np.zeros((len(sm),len(sm),len(sm)))
-        kp3_3_3_3 = np.zeros((len(sm),len(sm),len(sm)))
-
-        for l in range(4):
-            if l == 0:
-                for i in range(len(sm)):
-                    for j in range(len(sm)):
-                        for k in range(len(sm)):
-                            kp3_2_2_2[i,j,k] = kappa123_vec(corr3_all, self.z_array, chibin, qi_b2, qi_b2, qi_b2, sm[i], sm[j], sm[k], scheme ='SC', mask = ME)
-            elif l == 1:
-                for i in range(len(sm)):
-                    for j in range(len(sm)):
-                        for k in range(len(sm)):
-                            kp3_3_2_2[i,j,k] = kappa123_vec(corr3_all, self.z_array, chibin, qi_b3, qi_b2, qi_b2, sm[i], sm[j], sm[k], scheme ='SC', mask = ME)
-
-            elif l == 2:
-                for i in range(len(sm)):
-                    for j in range(len(sm)):
-                        for k in range(len(sm)):
-                            kp3_2_3_3[i,j,k] = kappa123_vec(corr3_all, self.z_array, chibin, qi_b2, qi_b3, qi_b3, sm[i], sm[j], sm[k], scheme ='SC', mask = ME)
-
-            elif l == 3:
-                for i in range(len(sm)):
-                    for j in range(len(sm)):
-                        for k in range(len(sm)):
-                            kp3_3_3_3[i,j,k] = kappa123_vec(corr3_all, self.z_array, chibin, qi_b3, qi_b3, qi_b3, sm[i], sm[j], sm[k], scheme ='SC', mask = ME)
-
+        kp_all_theory = {'kp2':self.kp2_all, 'kp3':self.kp3_all, 'id_kp2_unique':id_kp2_unique, 'id_kp3_unique':id_kp3_unique} 
         
-        kp3_all_theory = {'2_2_2':kp3_2_2_2, '3_2_2':kp3_3_2_2, '2_3_3':kp3_2_3_3, '3_3_3':kp3_3_3_3} 
-        
-        kp_all_theory = {'kp2':kp2_all_theory, 'kp3':kp3_all_theory}
-        fname = 'saved_DVs/lhs_n1000_jr' + str(jr) + '/kappa_all_jlhs' + str(jlhs)
-        save_obj(fname, kp_all_theory)
+        if self.do_save_DV:
+            if self.isLHS_sample:
+                lhs_val = block['lhs_id','lhs_val']
+                fname = 'saved_DVs/lhs_n1000_jr' + str(jr) + '/kappa_all_jlhs' + str(jlhs)
+                save_obj(fname, kp_all_theory)            
+            else:
+                fname = 'saved_DVs/testDV'
+                save_obj(fname, kp_all_theory)
     
-
-import sys
-jrv = sys.argv[1]
-saveDV(jrv)
-
-
 
 
 def setup(options):
