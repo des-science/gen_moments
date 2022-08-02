@@ -44,7 +44,7 @@ print('loaded')
 # Read healpix maps and initialize a spin-0 and spin-2 field
 f_0 = nmt.NmtField(mask, [mask])
 f_2 = nmt.NmtField(mask, [mask,mask])
-bins = nmt.bins.NmtBin.from_lmax_linear(1024, 1, is_Dell=False)#nmt.bins.NmtBin(nside=1024, ells=2048)
+bins = nmt.bins.NmtBin.from_lmax_linear(lmax, 1, is_Dell=False)#nmt.bins.NmtBin(nside=1024, ells=2048)
 
 
 w = nmt.NmtWorkspace()
@@ -52,7 +52,7 @@ w.compute_coupling_matrix(f_2, f_2, bins, is_teb=False)
 M = w.get_coupling_matrix()
 ME = (M[::4,:][:,::4])
 # import pdb; pdb.set_trace()
-saved = {'M':M, 'ME':ME, 'mask':mask}
+saved = {'M':M, 'ME':ME, 'mask':mask, 'lmax':lmax}
 pk.dump(saved, open('namaster_stuff.pk','wb'))
 
 
