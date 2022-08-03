@@ -38,9 +38,13 @@ class theory_setup():
         self.scheme = options.get_string(option_section, "scheme", default='SC')
         self.do_save_DV = options.get_bool(option_section, "do_save_DV", default=False)
         self.isLHS_sample = options.get_bool(option_section, "isLHS_sample", default=False)        
+        self.is1P_sample = options.get_bool(option_section, "is1P_sample", default=False)        
+        self.jr_save_lhs = options.get_int(option_section, "JR_LHS", default=0)
+        self.nsamp_save_lhs = options.get_int(option_section, "NSAMP", default=1000)
         self.saveDV_dir = options.get_string(option_section, "saveDV_dir", default='DV_all')
         self.saveDV_prefix = options.get_string(option_section, "saveDV_prefix", default='')
         self.z_array = np.linspace(zmin, zmax, nz)
+    
         
     def get_Pk_camb(self, block):
         Om, h, Ob, ns  = block[cosmo_sec, "omega_m"], block[cosmo_sec, "h0"], block[cosmo_sec, "omega_b"], block[cosmo_sec, "n_s"]
@@ -75,7 +79,7 @@ class theory_setup():
         self.PK_L = camb.get_matter_power_interpolator(pars_LCDM, hubble_units=False, k_hunit=False, kmax=50.0, zmax=4,nonlinear=False, extrap_kmax= 10**10)
         self.chitoz = results_LCDM.redshift_at_comoving_radial_distance
         self.ztochi = results_LCDM.comoving_radial_distance
-        self.dchi_dz = ((const.c.to(units.km / units.s)).value) / (results_LCDM.h_of_z(self.z_array)) 
+        self.dchi_dz = ((const.c.to(units.km / units.s)).value) / (results_LCDM.hubble_parameter(self.z_array)) 
         self.chi_zbin = self.ztochi(self.z_array)
 
         nz = len(self.z_array)
@@ -116,8 +120,8 @@ class theory_setup():
         self.qi_gravonly = {}
         for ji in range(self.nbins_tot):
             ng_array_source = self.nz_source_all[ji]
-            chi_lmat = np.tile(self.chi_zbin.reshape(len(self.z_array), 1), (1, len(self.z_array)))
-            chi_smat = np.tile(self.chi_zbin.reshape(1, len(self.z_array)), (len(self.z_array), 1))
+            chi_lmat = np.tile(self.chi_zbin.reshape(len(self.z_array), 1), (1, len(self.z_array))) + 1e-5
+            chi_smat = np.tile(self.chi_zbin.reshape(1, len(self.z_array)), (len(self.z_array), 1)) + 1e-5
             num = chi_smat - chi_lmat
             ind_lzero = np.where(num <= 0)
             num[ind_lzero] = 0
@@ -141,6 +145,7 @@ class theory_setup():
             ni_jz = self.nz_source_all[jz]
             qIAz = IAz * ni_jz * (1/self.dchi_dz)
             self.qi_wIA[jz] = qi_jz - qIAz
+            # import pdb; pdb.set_trace()
         return 0
 
 
@@ -320,7 +325,7 @@ class theory_setup():
         corr = corr_all[(sm1, sm2)]
         intgnd = qi1_qi2*corr.T/self.chi_zbin**2
         intgnd[:,0] = 0
-        res = np.trapz(intgnd , self.chi_zbin, axis = 1)
+        res = np.trapz(intgnd , self.chi_zbin, axis = 1)[0]
         return res
 
 
@@ -328,7 +333,7 @@ class theory_setup():
         corr = corr_all[(sm1, sm2, sm3)]
         intgnd = qi1_qi2_qi3*corr.T/self.chi_zbin**4
         intgnd[:,0] = 0
-        res = np.trapz(intgnd, self.chi_zbin, axis = 1)
+        res = np.trapz(intgnd, self.chi_zbin, axis = 1)[0]
         return res
 
 
@@ -348,12 +353,9 @@ class theory_setup():
             for j in range((self.nsm)):
                 self.fac_to_sum_all[(self.sm_all[i], self.sm_all[j])] = self.compute_factosum(np.array([self.sm_all[i]]), np.array([self.sm_all[j]]))
 
-
         self.fact_dfact_kappa3_to_sum_all = {}
         for i in range((self.nsm)):
             self.fact_dfact_kappa3_to_sum_all[(self.sm_all[i])] = self.compute_fact_dfact_kappa3(self.sm_all[i])  
-
-        
 
         id_corr2_unique, id_kp2_unique, id_corr3_unique, id_kp3_unique = get_unique_ind.save_unique_combs(self.nsm, self.nbins_tot)
 
@@ -384,15 +386,21 @@ class theory_setup():
             mjz3 = 1.+block['shear_calibration_parameters','m' + str(jz3+1)]
             self.kp3_all[jz1, jz2, jz3, i, j, k] = (mjz1*mjz2*mjz3)*self.kappa123_vec(self.corr3_all, self.qi_wIA[jz1]*self.qi_wIA[jz2]*self.qi_wIA[jz3], self.sm_all[i], self.sm_all[j], self.sm_all[k])
 
-        kp_all_theory = {'kp2':self.kp2_all, 'kp3':self.kp3_all, 'id_kp2_unique':id_kp2_unique, 'id_kp3_unique':id_kp3_unique} 
+        # kp_all_theory = {'kp2':self.kp2_all, 'kp3':self.kp3_all, 'id_kp2_unique':id_kp2_unique, 'id_kp3_unique':id_kp3_unique} 
+        kp_all_theory = {'kp2':self.kp2_all, 'kp3':self.kp3_all}         
         
         if self.do_save_DV:
             if self.isLHS_sample:
-                lhs_val = block['lhs_id','lhs_val']
-                fname = 'saved_DVs/lhs_n1000_jr' + str(jr) + '/kappa_all_jlhs' + str(jlhs)
+                lhs_id = int(block['emusave','lhsid'])
+                fname = self.saveDV_dir + '/lhs_n' + str(self.nsamp_save_lhs) + '_jr' + str(self.jr_save_lhs) + '/kappa_all_jlhs' + str(lhs_id)
                 save_obj(fname, kp_all_theory)            
+            elif self.is1P_sample:
+                lhs_id = int(block['emusave','lhsid'])
+                fname = self.saveDV_dir + '/1Pset' + '/kappa_all_jlhs' + str(lhs_id)
+                save_obj(fname, kp_all_theory)            
+
             else:
-                fname = 'testDV'
+                fname = self.saveDV_dir + 'kappa_all_fid'
                 save_obj(fname, kp_all_theory)
     
         return 0
