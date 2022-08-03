@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import ast
 import astropy.constants as const
 import astropy.units as units
-from cosmosis.datablock import names, option_section as opt
+from cosmosis.datablock import names, option_section
 from cosmosis.datablock.cosmosis_py import errors
 sys.path.insert(0, os.environ['COSMOSIS_SRC_DIR'] + '/gen_moments/cosmosis/src/')
 sys.path.insert(0, os.environ['COSMOSIS_SRC_DIR'] + '/gen_moments/data/')
@@ -34,18 +34,24 @@ class theory_setup():
         zmin = options.get_double(option_section, "zmin", default=0.0)
         zmax = options.get_double(option_section, "zmax", default=4.0)
         self.sm_all = ast.literal_eval(options.get_string(option_section, "sm_all", default='[21.0,33.6,54.,86., 137.6, 220.16]'))
-        self.fname_mask_stuff = options.get_string(option_section, "fname_mask_stuff", default='namaster_stuff.pk')
+        self.fname_mask_stuff = options.get_string(option_section, "fname_mask_stuff", default=os.environ['COSMOSIS_SRC_DIR'] + '/gen_moments/namaster_stuff.pk')
         self.scheme = options.get_string(option_section, "scheme", default='SC')
         self.do_save_DV = options.get_bool(option_section, "do_save_DV", default=False)
         self.isLHS_sample = options.get_bool(option_section, "isLHS_sample", default=False)        
         self.saveDV_dir = options.get_string(option_section, "saveDV_dir", default='DV_all')
-        self.saveDV_prefix = options.get_string(option_section, "saveDV_prefix", default=None)
+        self.saveDV_prefix = options.get_string(option_section, "saveDV_prefix", default='')
         self.z_array = np.linspace(zmin, zmax, nz)
         
     def get_Pk_camb(self, block):
-        Om, h, Ob, ns, lg10As = block[cosmo_sec, "omega_m"], block[cosmo_sec, "h0"], block[cosmo_sec, "omega_b"], block[cosmo_sec, "n_s"], (block[cosmo_sec, "lg10A_s"])
+        Om, h, Ob, ns  = block[cosmo_sec, "omega_m"], block[cosmo_sec, "h0"], block[cosmo_sec, "omega_b"], block[cosmo_sec, "n_s"]
+
+        # lg10As = block[cosmo_sec, "lg10A_s"]
+        # As = 10**lg10As
+
+        As = block[cosmo_sec, "A_s"]
+
         mnu = block[cosmo_sec, "mnu"]
-        As = 10**lg10As
+
         Onu = mnu/((h**2)*93.14)
         nnu = block[cosmo_sec, "nnu"]
         tau = block[cosmo_sec, "tau"]
@@ -69,7 +75,7 @@ class theory_setup():
         self.PK_L = camb.get_matter_power_interpolator(pars_LCDM, hubble_units=False, k_hunit=False, kmax=50.0, zmax=4,nonlinear=False, extrap_kmax= 10**10)
         self.chitoz = results_LCDM.redshift_at_comoving_radial_distance
         self.ztochi = results_LCDM.comoving_radial_distance
-        self.dchi_dz = ((const.c.to(units.km / units.s)).value) / (results_LCDM.h_of_z) 
+        self.dchi_dz = ((const.c.to(units.km / units.s)).value) / (results_LCDM.h_of_z(self.z_array)) 
         self.chi_zbin = self.ztochi(self.z_array)
 
         nz = len(self.z_array)
@@ -97,11 +103,11 @@ class theory_setup():
             if ('nz_source', 'bin_' + str(ji+1)) in block.keys():
                 nz_ji = block['nz_source', 'bin_' + str(ji+1)]
                 nz_norm_ji = nz_ji/scipy.integrate.simps(nz_ji, zarray_inp)
-                nz_norm_ji_interp = interpolate.inter1d(zarray_inp, nz_norm_ji, fill_value=0.0)
+                nz_norm_ji_interp = interpolate.interp1d(zarray_inp, nz_norm_ji, bounds_error=False, fill_value=0.0)
                 nz_new_ji = nz_norm_ji_interp(self.z_array)
                 nz_new_ji /= scipy.integrate.simps(nz_new_ji, self.z_array)
                 self.nz_source_all[ji] = nz_new_ji
-                nbins_tot += 1
+                self.nbins_tot += 1
             else:
                 break
             
@@ -118,14 +124,14 @@ class theory_setup():
             ng_array_source_rep = np.tile(ng_array_source.reshape(1, len(self.z_array)), (len(self.z_array), 1))
             int_sourcez = scipy.integrate.simps(ng_array_source_rep * (num / chi_smat), self.z_array)
             coeff_ints = 3 * (H0 ** 2) * Om0 / (2. * ((const.c.to(units.km / units.s)).value)**2)
-            qi_array = coeff_ints * self.chi_array * (1. + self.z_array) * int_sourcez
+            qi_array = coeff_ints * self.chi_zbin * (1. + self.z_array) * int_sourcez
             qi_array[0] = 0.
             self.qi_gravonly[ji] = qi_array
 
         return 0
 
     def get_qi_after_IA(self, block):
-        z0 = block[IA_sec,'zpiv']        
+        z0 = block[IA_sec,'z_piv']        
         AIA0 = block[IA_sec,'A1']
         alpha_IA = block[IA_sec,'alpha1']
         IAz = AIA0*(((1+self.z_array)/(1+z0))**alpha_IA)*(0.0134/self.Dz_nz)
@@ -155,7 +161,7 @@ class theory_setup():
         chi_mat = np.tile(self.chi_zbin.reshape(nz, 1), (1, nell))
         ell_mat = np.tile(ell.reshape(1, nell), (nz, 1))
         k_mat = ell_mat/chi_mat
-        P_lz_mat = np.exp(self.PK.ev(z_mat, np.log(k_mat + 1e-6)))
+        self.P_lz_mat = np.exp(self.PK.ev(z_mat, np.log(k_mat + 1e-6)))
         F_l =  hp.sphtfunc.pixwin(512, lmax = self.lmax)[:self.lmax]
         F_l_mat = np.tile(F_l.reshape(1, nell), (nz, 1))
         self.P_lz_mat *= (F_l_mat)**2
@@ -163,11 +169,11 @@ class theory_setup():
             f_l = (ell+2)*(ell-1)/(ell*(ell+1))
             f_l[0:2] = 0
             f_l_mat = np.tile(f_l[:self.lmax].reshape(1, nell), (nz, 1))
-            P_lz_mat *= f_l_mat
+            self.P_lz_mat *= f_l_mat
 
             P_lz_mat_maskv =  np.zeros((nz, nell))
             for jz in range(nz):
-                P_lz_mat_maskv[jz, :] = self.mask[:self.lmax,:self.lmax]@P_lz_mat[jz, :self.lmax]
+                P_lz_mat_maskv[jz, :] = self.mask[:self.lmax,:self.lmax]@self.P_lz_mat[jz, :self.lmax]
             f_linv = (ell*(ell+1))/((ell+2)*(ell-1))
             f_linv[0:2] = 0
             f_linv_mat = np.tile(f_linv.reshape(1, nell), (nz, 1))
@@ -328,25 +334,28 @@ class theory_setup():
 
     def execute(self, block):
 
+        self.get_mask_stuff()
         self.get_Pk_camb(block)
         self.get_qigrav_and_nz(block)
         self.get_qi_after_IA(block)
-        self.get_mask_stuff()
         self.compute_Plz_mat()
+        self.compute_abc_kappa3()
 
         self.nsm = len(self.sm_all)
 
         self.fac_to_sum_all = {}
-        for i in range(len(self.nsm)):
-            for j in range(len(self.nsm)):
+        for i in range((self.nsm)):
+            for j in range((self.nsm)):
                 self.fac_to_sum_all[(self.sm_all[i], self.sm_all[j])] = self.compute_factosum(np.array([self.sm_all[i]]), np.array([self.sm_all[j]]))
 
 
         self.fact_dfact_kappa3_to_sum_all = {}
-        for i in range(len(self.nsm)):
+        for i in range((self.nsm)):
             self.fact_dfact_kappa3_to_sum_all[(self.sm_all[i])] = self.compute_fact_dfact_kappa3(self.sm_all[i])  
 
-        id_corr2_unique, id_kp2_unique, id_corr3_unique, id_kp3_unique = get_unique_ind(self.nsm, self.nbins_tot)
+        
+
+        id_corr2_unique, id_kp2_unique, id_corr3_unique, id_kp3_unique = get_unique_ind.save_unique_combs(self.nsm, self.nbins_tot)
 
         self.corr2_all = {}
         for jid_c2 in range(len(id_corr2_unique)):
@@ -364,7 +373,7 @@ class theory_setup():
 
         self.corr3_all = {}
         for jid_c3 in range(len(id_corr3_unique)):        
-            i, j, k = id_corr2_unique[jid_c3]
+            i, j, k = id_corr3_unique[jid_c3]
             self.corr3_all[(self.sm_all[i], self.sm_all[j], self.sm_all[k])] = self.compute_masked_m123_vec((self.sm_all[i], self.sm_all[j], self.sm_all[k]))    
 
         self.kp3_all = {}
@@ -373,7 +382,7 @@ class theory_setup():
             mjz1 = 1.+block['shear_calibration_parameters','m' + str(jz1+1)]
             mjz2 = 1.+block['shear_calibration_parameters','m' + str(jz2+1)]
             mjz3 = 1.+block['shear_calibration_parameters','m' + str(jz3+1)]
-            self.kp3_all[jz1, jz2, jz3, i, j, k] = (mjz1*mjz2*mjz3)*self.kappa3_vec(self.corr3_all, self.qi_wIA[jz1]*self.qi_wIA[jz2]*self.qi_wIA[jz3], self.sm_all[i], self.sm_all[j], self.sm_all[k])
+            self.kp3_all[jz1, jz2, jz3, i, j, k] = (mjz1*mjz2*mjz3)*self.kappa123_vec(self.corr3_all, self.qi_wIA[jz1]*self.qi_wIA[jz2]*self.qi_wIA[jz3], self.sm_all[i], self.sm_all[j], self.sm_all[k])
 
         kp_all_theory = {'kp2':self.kp2_all, 'kp3':self.kp3_all, 'id_kp2_unique':id_kp2_unique, 'id_kp3_unique':id_kp3_unique} 
         
@@ -383,9 +392,10 @@ class theory_setup():
                 fname = 'saved_DVs/lhs_n1000_jr' + str(jr) + '/kappa_all_jlhs' + str(jlhs)
                 save_obj(fname, kp_all_theory)            
             else:
-                fname = 'saved_DVs/testDV'
+                fname = 'testDV'
                 save_obj(fname, kp_all_theory)
     
+        return 0
 
 
 def setup(options):

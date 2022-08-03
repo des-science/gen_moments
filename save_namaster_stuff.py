@@ -29,7 +29,7 @@ def load_obj(name):
 jtplot.reset()
 
 
-fname = '/global/cfs/cdirs/des/shivamp/gen_moments/Moments_analysis_minsu/Covariance/mask_DES_y3_py2'
+fname = 'Covariance/mask_DES_y3_py2'
 mask = load_obj(fname)
 print ('f_sky: ', 1./(len(mask)*1./len(mask[mask])))
 mask_sm =  hp.sphtfunc.smoothing(mask, (13./60.)*np.pi/180.  )
