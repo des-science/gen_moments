@@ -34,6 +34,7 @@ class theory_setup():
         zmin = options.get_double(option_section, "zmin", default=0.0)
         zmax = options.get_double(option_section, "zmax", default=4.0)
         self.sm_all = ast.literal_eval(options.get_string(option_section, "sm_all", default='[21.0,33.6,54.,86., 137.6, 220.16]'))
+        self.source_zbins = ast.literal_eval(options.get_string(option_section, "source_zbins", default='[1,2,3,4]'))
         self.fname_mask_stuff = options.get_string(option_section, "fname_mask_stuff", default=os.environ['COSMOSIS_SRC_DIR'] + '/gen_moments/namaster_stuff.pk')
         self.scheme = options.get_string(option_section, "scheme", default='SC')
         self.do_save_DV = options.get_bool(option_section, "do_save_DV", default=False)
@@ -44,7 +45,10 @@ class theory_setup():
         self.saveDV_dir = options.get_string(option_section, "saveDV_dir", default='DV_all')
         self.saveDV_prefix = options.get_string(option_section, "saveDV_prefix", default='')
         self.z_array = np.linspace(zmin, zmax, nz)
-    
+        self.nsm = len(self.sm_all)
+        self.nbins_tot_inp = len(self.source_zbins)
+
+        self.id_corr2_unique, self.id_kp2_unique, self.id_corr3_unique, self.id_kp3_unique = get_unique_ind.save_unique_combs(self.nsm, self.nbins_tot_inp)
         
     def get_Pk_camb(self, block):
         Om, h, Ob, ns  = block[cosmo_sec, "omega_m"], block[cosmo_sec, "h0"], block[cosmo_sec, "omega_b"], block[cosmo_sec, "n_s"]
@@ -114,6 +118,9 @@ class theory_setup():
                 self.nbins_tot += 1
             else:
                 break
+        
+        if self.nbins_tot_inp != self.nbins_tot:
+            raise ValueError("Input number of source bins in the ini file differ from what I could find in the 2pt file. This will give error in getting unique combination of the bins")
             
 
         Om0, H0 = block[cosmo_sec, "omega_m"], 100.*block[cosmo_sec, "h0"]
@@ -322,7 +329,10 @@ class theory_setup():
 
 
     def kappa2_vec(self, corr_all, qi1_qi2, sm1, sm2):
-        corr = corr_all[(sm1, sm2)]
+        try:
+            corr = corr_all[(sm1, sm2)]
+        except:
+            corr = corr_all[(sm2, sm1)]
         intgnd = qi1_qi2*corr.T/self.chi_zbin**2
         intgnd[:,0] = 0
         res = np.trapz(intgnd , self.chi_zbin, axis = 1)[0]
@@ -330,7 +340,12 @@ class theory_setup():
 
 
     def kappa123_vec(self, corr_all, qi1_qi2_qi3, sm1, sm2, sm3):
-        corr = corr_all[(sm1, sm2, sm3)]
+        perm_all = [(sm1,sm2,sm3),(sm1,sm3,sm2),(sm2,sm1,sm3),(sm2,sm3,sm1),(sm3,sm2,sm1),(sm3,sm1,sm2)]
+        for perm in perm_all:
+            if perm in list(corr_all.keys()):
+                perm_tocall = perm
+                break
+        corr = corr_all[perm_tocall]
         intgnd = qi1_qi2_qi3*corr.T/self.chi_zbin**4
         intgnd[:,0] = 0
         res = np.trapz(intgnd, self.chi_zbin, axis = 1)[0]
@@ -346,7 +361,7 @@ class theory_setup():
         self.compute_Plz_mat()
         self.compute_abc_kappa3()
 
-        self.nsm = len(self.sm_all)
+        
 
         self.fac_to_sum_all = {}
         for i in range((self.nsm)):
@@ -357,30 +372,28 @@ class theory_setup():
         for i in range((self.nsm)):
             self.fact_dfact_kappa3_to_sum_all[(self.sm_all[i])] = self.compute_fact_dfact_kappa3(self.sm_all[i])  
 
-        id_corr2_unique, id_kp2_unique, id_corr3_unique, id_kp3_unique = get_unique_ind.save_unique_combs(self.nsm, self.nbins_tot)
-
         self.corr2_all = {}
-        for jid_c2 in range(len(id_corr2_unique)):
-            i, j = id_corr2_unique[jid_c2]
+        for jid_c2 in range(len(self.id_corr2_unique)):
+            i, j = self.id_corr2_unique[jid_c2]
             self.corr2_all[(self.sm_all[i], self.sm_all[j])] = self.compute_masked_m12_from_factosum(self.fac_to_sum_all[(self.sm_all[i], self.sm_all[j])])  
 
 
         self.kp2_all = {}
-        for jid_kp2 in range(len(id_kp2_unique)):
-            jz1, jz2, i, j = id_kp2_unique[jid_kp2]
+        for jid_kp2 in range(len(self.id_kp2_unique)):
+            jz1, jz2, i, j = self.id_kp2_unique[jid_kp2]
             mjz1 = 1.+block['shear_calibration_parameters','m' + str(jz1+1)]
             mjz2 = 1.+block['shear_calibration_parameters','m' + str(jz2+1)]
             self.kp2_all[jz1, jz2, i, j] = (mjz1*mjz2)*self.kappa2_vec(self.corr2_all, self.qi_wIA[jz1]*self.qi_wIA[jz2], self.sm_all[i], self.sm_all[j])
         
 
         self.corr3_all = {}
-        for jid_c3 in range(len(id_corr3_unique)):        
-            i, j, k = id_corr3_unique[jid_c3]
+        for jid_c3 in range(len(self.id_corr3_unique)):        
+            i, j, k = self.id_corr3_unique[jid_c3]
             self.corr3_all[(self.sm_all[i], self.sm_all[j], self.sm_all[k])] = self.compute_masked_m123_vec((self.sm_all[i], self.sm_all[j], self.sm_all[k]))    
 
         self.kp3_all = {}
-        for jid_kp3 in range(len(id_kp3_unique)):
-            jz1, jz2, jz3, i, j, k = id_kp3_unique[jid_kp3]
+        for jid_kp3 in range(len(self.id_kp3_unique)):
+            jz1, jz2, jz3, i, j, k = self.id_kp3_unique[jid_kp3]
             mjz1 = 1.+block['shear_calibration_parameters','m' + str(jz1+1)]
             mjz2 = 1.+block['shear_calibration_parameters','m' + str(jz2+1)]
             mjz3 = 1.+block['shear_calibration_parameters','m' + str(jz3+1)]
