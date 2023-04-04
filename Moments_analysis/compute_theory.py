@@ -17,8 +17,8 @@ import pandas as pd
 import ctypes
 from ctypes import *
 import h5py
-import cosmolopy.distance as cd
-import cosmolopy
+# import cosmolopy.distance as cd
+# import cosmolopy
 import scipy
 from scipy.interpolate import interp1d
 import timeit

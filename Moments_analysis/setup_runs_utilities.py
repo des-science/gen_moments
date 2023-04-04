@@ -4,8 +4,8 @@ import sys
 import math
 import scipy
 from scipy import linalg
-import cosmolopy.distance as cd
-import cosmolopy
+# import cosmolopy.distance as cd
+# import cosmolopy
 from .compute_theory import *
 import copy
 

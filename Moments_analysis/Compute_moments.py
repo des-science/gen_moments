@@ -2,7 +2,8 @@
 This class takes as input maps of the shear field and compute the smoothed moments (2nd and third order) out of them.
 '''
 
-import pyfits as pf
+# import pyfits as pf
+import astropy.io.fits as pf
 import numpy as np
 import os
 import copy
@@ -300,56 +301,59 @@ class moments_map(object):
 
             denoise2 = copy.copy(denoise1)
             field_label2 = copy.copy(field_label1)
+        try:
+            # we start with the second moments computation
+            for i, bin1 in enumerate(tomo_bins1):
+                for j, bin2 in enumerate(tomo_bins2):
+                    # at every tomo1-tomo2, there is a moment for every sm1-sm2
+                    moments_2 = np.zeros(
+                        (len(self.conf['smoothing_scales']), len(self.conf['smoothing_scales'])))
 
-        # we start with the second moments computation
-        for i, bin1 in enumerate(tomo_bins1):
-            for j, bin2 in enumerate(tomo_bins2):
-                # at every tomo1-tomo2, there is a moment for every sm1-sm2
-                moments_2 = np.zeros(
-                    (len(self.conf['smoothing_scales']), len(self.conf['smoothing_scales'])))
-
-                for kk1, sm1 in enumerate(self.conf['smoothing_scales']):
-                    for kk2, sm2 in enumerate(self.conf['smoothing_scales']):
-                        if do_all_matrix or kk2 >= kk1:
-                            map_signal1 = self.smoothed_maps[field_label1][bin1][sm1]
-                            map_signal2 = self.smoothed_maps[field_label2][bin2][sm2]
-
-                            if (denoise1 != None) and (i == j) and (denoise1 == denoise2):
-                                map_rndm1 = self.smoothed_maps[denoise1][bin1][sm1]
-                                map_rndm2 = self.smoothed_maps[denoise2][bin2][sm2]
-                                moments_2[kk1, kk2] = np.mean(
-                                    map_signal1*map_signal2) - np.mean(map_rndm1*map_rndm2)
-                            else:
-                                moments_2[kk1, kk2] = np.mean(
-                                    map_signal1*map_signal2)
-                        else:
-                            moments_2[kk1, kk2] = moments_2[kk2, kk1]
-
-                    moments_mute.update(
-                        {'{0}_{1}'.format(bin1, bin2): moments_2})
-
-        # we proceed with the third moments computation
-        for i, bin1 in enumerate(tomo_bins1):
-            for j, bin2 in enumerate(tomo_bins2):
-                for zxk, bin3 in enumerate(tomo_bins2):
-
-                    # at every tomo1-tomo2-tomo3, there is a moment for every sm1-sm2-sm3
-                    moments_3 = np.zeros((
-                        len(self.conf['smoothing_scales']), len(self.conf['smoothing_scales']), len(self.conf['smoothing_scales'])))
                     for kk1, sm1 in enumerate(self.conf['smoothing_scales']):
                         for kk2, sm2 in enumerate(self.conf['smoothing_scales']):
-                            for kk3, sm3 in enumerate(self.conf['smoothing_scales']):
-                                if do_all_matrix or (kk3 >= kk2 and kk2 >= kk1):
-                                    map_tbsm1 = self.smoothed_maps[field_label1][bin1][sm1]
-                                    map_tbsm2 = self.smoothed_maps[field_label2][bin2][sm2]
-                                    map_tbsm3 = self.smoothed_maps[field_label2][bin3][sm3]
-                                    moments_3[kk1, kk2, kk3] = np.mean(
-                                            map_tbsm1*map_tbsm2*map_tbsm3)
+                            if do_all_matrix or kk2 >= kk1:
+                                map_signal1 = self.smoothed_maps[field_label1][bin1][sm1]
+                                map_signal2 = self.smoothed_maps[field_label2][bin2][sm2]
+
+                                if (denoise1 != None) and (i == j) and (denoise1 == denoise2):
+                                    map_rndm1 = self.smoothed_maps[denoise1][bin1][sm1]
+                                    map_rndm2 = self.smoothed_maps[denoise2][bin2][sm2]
+                                    moments_2[kk1, kk2] = np.mean(
+                                        map_signal1*map_signal2) - np.mean(map_rndm1*map_rndm2)
                                 else:
-                                    foo = np.sort([kk1, kk2, kk3])
-                                    moments_3[kk1, kk2,kk3] = moments_3[foo[0], foo[1], foo[2]]
+                                    moments_2[kk1, kk2] = np.mean(
+                                        map_signal1*map_signal2)
+                            else:
+                                moments_2[kk1, kk2] = moments_2[kk2, kk1]
 
-                    moments_mute.update(
-                        {'{0}_{1}_{2}'.format(bin1, bin2, bin3): moments_3})
+                        moments_mute.update(
+                            {'{0}_{1}'.format(bin1, bin2): moments_2})
 
-        self.moments.update({label_moments: moments_mute})
+            # we proceed with the third moments computation
+            for i, bin1 in enumerate(tomo_bins1):
+                for j, bin2 in enumerate(tomo_bins2):
+                    for zxk, bin3 in enumerate(tomo_bins2):
+
+                        # at every tomo1-tomo2-tomo3, there is a moment for every sm1-sm2-sm3
+                        moments_3 = np.zeros((
+                            len(self.conf['smoothing_scales']), len(self.conf['smoothing_scales']), len(self.conf['smoothing_scales'])))
+                        for kk1, sm1 in enumerate(self.conf['smoothing_scales']):
+                            for kk2, sm2 in enumerate(self.conf['smoothing_scales']):
+                                for kk3, sm3 in enumerate(self.conf['smoothing_scales']):
+                                    if do_all_matrix or (kk3 >= kk2 and kk2 >= kk1):
+                                        map_tbsm1 = self.smoothed_maps[field_label1][bin1][sm1]
+                                        map_tbsm2 = self.smoothed_maps[field_label2][bin2][sm2]
+                                        map_tbsm3 = self.smoothed_maps[field_label2][bin3][sm3]
+                                        moments_3[kk1, kk2, kk3] = np.mean(
+                                                map_tbsm1*map_tbsm2*map_tbsm3)
+                                    else:
+                                        foo = np.sort([kk1, kk2, kk3])
+                                        moments_3[kk1, kk2,kk3] = moments_3[foo[0], foo[1], foo[2]]
+
+                        moments_mute.update(
+                            {'{0}_{1}_{2}'.format(bin1, bin2, bin3): moments_3})
+
+            self.moments.update({label_moments: moments_mute})
+        except:
+            import pdb
+            pdb.set_trace()

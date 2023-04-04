@@ -66,5 +66,5 @@ for jsv in range(len(rsv)):
 
     # np.savetxt('sample_chain_listsampler_hres_fixw_ese_rs' + str(rsv[jsv]) + '.txt',LHS_points_final,header=first_line)
     # np.savetxt('sample_chain_listsampler_hres_fixw_cm_rs' + str(rsv[jsv]) + '.txt',LHS_points_final,header=first_line)
-    np.savetxt(sdir + 'allparams_samp_rs' + str(rsv[jsv]) + '_nsamp_' + str(num) + '.txt',LHS_points_final,header=first_line)
+    np.savetxt(sdir + 'FINAL_allparams_samp_rs' + str(rsv[jsv]) + '_nsamp_' + str(num) + '.txt',LHS_points_final,header=first_line)
 

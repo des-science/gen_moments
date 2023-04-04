@@ -29,10 +29,13 @@ def load_obj(name):
 jtplot.reset()
 
 
-fname = 'Covariance/mask_DES_y3_py2'
-mask = load_obj(fname)
-print ('f_sky: ', 1./(len(mask)*1./len(mask[mask])))
-mask_sm =  hp.sphtfunc.smoothing(mask, (13./60.)*np.pi/180.  )
+# fname = 'Covariance/mask_DES_y3_py2'
+fname = '/global/cfs/cdirs/des/mgatti/maps_shivam_mask/maps_NEW_grid_fiducialcosmo_SC_k_Om=0.26_s8=0.84num=14A_IA=0.00e_IA=0.00rot=2'
+mask_df = load_obj(fname)
+mask = mask_df[0]['mask']
+# print('f_sky: ', 1./(len(mask)*1./len(mask[mask])))
+# mask_sm =  hp.sphtfunc.smoothing(mask, (13./60.)*np.pi/180.  )
+mask_sm =  hp.sphtfunc.smoothing(mask, (2./60.)*np.pi/180.  )
 mask_sm[mask] = 1.
 mask = copy.copy(mask_sm)
 # computes Cl.
@@ -53,6 +56,7 @@ M = w.get_coupling_matrix()
 ME = (M[::4,:][:,::4])
 # import pdb; pdb.set_trace()
 saved = {'M':M, 'ME':ME, 'mask':mask, 'lmax':lmax}
-pk.dump(saved, open('namaster_stuff.pk','wb'))
+pk.dump(saved, open('namaster_stuff_sm2.pk','wb'))
+
 
 
